@@ -9,6 +9,11 @@ LOG_FILE="/home/daniel/proyecto_sistemas/monitor_log.txt"
 ADMIN_EMAIL="daniel.molina@ucuenca.edu.ec"
 SMTP_CONFIG="/home/daniel/.msmtprc"
 
+# Configuración de MySQL
+MYSQL_USER="root"
+MYSQL_PASSWORD="root"
+MYSQL_DB="monitor_stats"
+
 # Tiempo de espera para validación del consumo
 THRESHOLD_TIME=30
 
@@ -24,17 +29,46 @@ send_email() {
     echo -e "Subject: $subject\n\n$body" | msmtp --file="$SMTP_CONFIG" "$ADMIN_EMAIL"
 }
 
+# Función para insertar datos en la base de datos
+insert_into_db() {
+    local cpu_usage="$1"
+    local ram_usage="$2"
+    local max_cpu_pid="$3"
+    local max_cpu_name="$4"
+    local max_ram_pid="$5"
+    local max_ram_name="$6"
+
+    mysql -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DB" <<EOF
+INSERT INTO resource_usage (cpu_usage, ram_usage, max_cpu_pid, max_cpu_name, max_ram_pid, max_ram_name)
+VALUES ($cpu_usage, $ram_usage, $max_cpu_pid, '$max_cpu_name', $max_ram_pid, '$max_ram_name');
+EOF
+}
+
 # Función para monitorear y registrar estadísticas
 monitor_resources() {
     echo "--- $(date) ---" >> "$LOG_FILE"
 
-    # Uso de CPU por procesador
-    mpstat -P ALL 1 1 | awk '/^[0-9]/ {printf "CPU%s: %.2f%%\n", $2, 100-$NF}' >> "$LOG_FILE"
+    # Uso de CPU y RAM global
+    local cpu_usage=$(top -bn1 | grep "Cpu(s)" | awk '{print 100 - $8}')
+    local ram_usage=$(free | grep Mem | awk '{print $3/$2 * 100.0}')
 
     # Procesos con mayor consumo de CPU y RAM
-    echo "Procesos más consumidores de recursos:" >> "$LOG_FILE"
-    ps -eo pid,%cpu,%mem,comm --sort=-%cpu | head -n 10 >> "$LOG_FILE"
-    echo "" >> "$LOG_FILE"
+    local max_cpu_process=$(ps -eo pid,%cpu,%mem,comm --sort=-%cpu | awk 'NR==2')
+    local max_ram_process=$(ps -eo pid,%cpu,%mem,comm --sort=-%mem | awk 'NR==2')
+
+    local max_cpu_pid=$(echo $max_cpu_process | awk '{print $1}')
+    local max_cpu_name=$(echo $max_cpu_process | awk '{print $4}')
+
+    local max_ram_pid=$(echo $max_ram_process | awk '{print $1}')
+    local max_ram_name=$(echo $max_ram_process | awk '{print $4}')
+
+    # Registrar en el archivo de log
+    echo "CPU Global: $cpu_usage%, RAM Global: $ram_usage%" >> "$LOG_FILE"
+    echo "Proceso mayor CPU: PID=$max_cpu_pid, Nombre=$max_cpu_name" >> "$LOG_FILE"
+    echo "Proceso mayor RAM: PID=$max_ram_pid, Nombre=$max_ram_name" >> "$LOG_FILE"
+
+    # Insertar en la base de datos
+    insert_into_db "$cpu_usage" "$ram_usage" "$max_cpu_pid" "$max_cpu_name" "$max_ram_pid" "$max_ram_name"
 }
 
 # Función para ajustar prioridades o terminar procesos
@@ -48,6 +82,18 @@ handle_high_usage() {
         local ram=$(echo $process | awk '{print $3}')
         local name=$(echo $process | awk '{print $4}')
 
+        # Verificar que el uso de CPU sea un valor numérico válido
+        if ! [[ $cpu =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "Error: Uso de CPU no válido ($cpu%) para PID: $pid, Nombre: $name" >> "$LOG_FILE"
+            continue
+        fi
+
+        # Ignorar valores absurdos o erróneos (> 100%)
+        if (( $(echo "$cpu > 100" | bc -l) )); then
+            echo "Advertencia: Uso de CPU mayor a 100% detectado ($cpu%) para PID: $pid, Nombre: $name" >> "$LOG_FILE"
+            continue
+        fi
+
         # Si supera el 90% de CPU, matar el proceso
         if (( $(echo "$cpu > $CPU_KILL_THRESHOLD" | bc -l) )); then
             kill -9 "$pid"
@@ -59,15 +105,17 @@ handle_high_usage() {
                 - Uso de RAM: $ram%"
             echo "Proceso terminado - PID: $pid, Nombre: $name, CPU: $cpu%, RAM: $ram%" >> "$LOG_FILE"
         else
-            # Cambiar prioridad si CPU supera el 60%
-            renice +10 "$pid" > /dev/null
-            send_email "[ALERTA] Prioridad de proceso modificada" \
-                "Se cambió la prioridad del proceso:\n\
-                - PID: $pid\n\
-                - Nombre: $name\n\
-                - Uso de CPU: $cpu%\n\
-                - Uso de RAM: $ram%"
-            echo "Prioridad ajustada - PID: $pid, Nombre: $name, CPU: $cpu%, RAM: $ram%" >> "$LOG_FILE"
+            # Cambiar prioridad si CPU supera el 60% por más de 30 segundos
+            if (( $(echo "$cpu >= $CPU_THRESHOLD" | bc -l) )); then
+                renice +10 "$pid" > /dev/null
+                send_email "[ALERTA] Prioridad de proceso modificada" \
+                    "Se cambió la prioridad del proceso:\n\
+                    - PID: $pid\n\
+                    - Nombre: $name\n\
+                    - Uso de CPU: $cpu%\n\
+                    - Uso de RAM: $ram%"
+                echo "Prioridad ajustada - PID: $pid, Nombre: $name, CPU: $cpu%, RAM: $ram%" >> "$LOG_FILE"
+            fi
         fi
     done <<< "$high_usage_processes"
 }
