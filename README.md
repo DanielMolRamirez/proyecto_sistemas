@@ -92,10 +92,10 @@ Asegúrate de actualizar las siguientes variables en el script `monitor.sh` seg�
 - `MYSQL_DB`: Nombre de la base de datos (debe ser `monitoreo_recursos`).
 
 ## Ejecución
-Ejecuta el script manualmente o configura un servicio para que se ejecute automáticamente:
-```bash
-/home/usuario/proyecto_sistemas/monitor.sh
-```
+Abre 'crontab -e', e inserta el codigo
+
+@reboot /bin/bash /home/$USER/proyecto_sistemas/monitor.sh &
+
 
 ## Servicio del sistema (opcional)
 Para ejecutar el script como un servicio del sistema:
