@@ -92,8 +92,9 @@ Asegúrate de actualizar las siguientes variables en el script `monitor.sh` seg�
 - `MYSQL_DB`: Nombre de la base de datos (debe ser `monitoreo_recursos`).
 
 ## Ejecución
+```bash
 Abre 'crontab -e', e inserta el codigo
-
+```
 @reboot /bin/bash /home/$USER/proyecto_sistemas/monitor.sh &
 
 
